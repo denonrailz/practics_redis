@@ -2,9 +2,27 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"reflect"
+	"github.com/go-redis/redis/v8"
+	"time"
 )
+
+type rateLimiter struct {
+	ttl       time.Duration //
+	threshold int           // rate limiting threshold
+	client    *redis.Client
+}
+
+func (rl *rateLimiter) Rate(ctx context.Context, key string) error {
+	val, _ := rl.client.Get(ctx, key).Int()
+	if val > rl.threshold {
+		return errors.New("max rate limiter reached, please try againg later")
+	}
+	rl.client.Incr(ctx, key)
+	rl.client.Expire(ctx, key, rl.ttl)
+	return nil
+}
 
 func main() {
 	redisClient, err := getRedisClient()
@@ -12,33 +30,28 @@ func main() {
 		panic(err)
 	}
 
+	fmt.Println("Connected to redis: success")
+	rLimiter := rateLimiter{
+		ttl:       time.Second * 10,
+		threshold: 10,
+		client:    redisClient,
+	}
 	ctx := context.Background()
-	//Basic data sets for strings and integers
-	//Follow the convention we have domain:id:param
-	redisClient.Set(ctx, "athlets:15:name", "Jhonny", 0)
-	redisClient.Set(ctx, "athlets:15:weight", 82.45, 0)
-	redisClient.Set(ctx, "athlets:15:age", 25, 0)
-	name, _ := redisClient.Get(ctx, "athlets:15:name").Result()
-	age, _ := redisClient.Get(ctx, "athlets:15:age").Int()
-	weight, _ := redisClient.Get(ctx, "athlets:15:weight").Result()
 
-	fmt.Printf("Athlet with id:15 name: %v (type: %v)\n", name, reflect.TypeOf(name))
-	fmt.Printf("Athlet with id:15 age: %v (type: %v)\n", age, reflect.TypeOf(age))
-	fmt.Printf("Athlet with id:15 weight: %v (type: %v)\n", weight, reflect.TypeOf(weight))
-
-	//Inc functions
-	redisClient.Incr(ctx, "athlets:15:age")
-	age, _ = redisClient.Get(ctx, "athlets:15:age").Int()
-	fmt.Printf("---\nNew athlet age is: %v (type: %v)\n", age, reflect.TypeOf(age))
-	redisClient.Decr(ctx, "athlets:15:age")
-	redisClient.IncrBy(ctx, "athlets:15:age", 10)
-	age, _ = redisClient.Get(ctx, "athlets:15:age").Int()
-	fmt.Printf("Updated athlet age: %v (type: %v)\n", age, reflect.TypeOf(age))
-
-	//finding by keys
-	keys, _ := redisClient.Keys(ctx, "athlets:*").Result()
-	fmt.Println("---\nkeys for pattern: 'athlets:*'")
-	for i, v := range keys {
-		fmt.Printf("%v. key: %v\n", i+1, v)
+	var i, j int
+	for {
+		if i > 50 {
+			break
+		}
+		err := rLimiter.Rate(ctx, "sample")
+		if err != nil {
+			fmt.Printf("%v. Try: %v. Wait...\n", err, j)
+			time.Sleep(100 * time.Millisecond)
+			j++
+		} else {
+			fmt.Printf("%v. Some action\n", i)
+			j = 0
+			i++
+		}
 	}
 }
